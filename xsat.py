@@ -29,8 +29,7 @@ def str2bool(v: str) -> bool:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-
-def parser():
+def get_parser():
     parser = argparse.ArgumentParser(prog='Xsat')
     parser.add_argument('-v', '--version', action='version', version='%(prog) version 2.0.0')
     parser.add_argument('--niter', help='niter in basinhopping', action='store', type=int, required=False, default=100)
@@ -87,7 +86,6 @@ def configure(args):
     config.method = args.method
     config.step_size = args.stepSize
     config.multi_process = args.multi
-
     if args.bench:
         args.debug = False
         args.verify = False
@@ -105,23 +103,23 @@ def configure(args):
     return config
 
 def main():
-    args = parser().parse_args()
-
+    parser = get_parser()
+    args = parser.parse_args()
+    config = configure(args)
     if args.suppressWarning:
         warnings.filterwarnings("ignore")
-
     t_start = time.time()
     # use z3 frontend
     with open("XSAT_IN.txt") as f:
         try:
-            expr_z3 = z3.simplify(z3.parse_smt2_file(f.read().rstrip()))
+            expr_z3 = z3.simplify(z3.parse_smt2_file(f.read().rstrip())[0])
         except z3.Z3Exception:
-            sys.stderr.write("[Xsat] The Z3 fornt-end fails when verifying the model.\n")
+            sys.stderr.write("[Xsat] The Z3 front-end fails when verifying the model.\n")
     with open("build/foo.symbolTable", "rb") as f:
         symbolTable = pickle.load(f)
-        if len(symbolTable) == 0:
-            print("sat")
-            sys.exit(0)
+    if len(symbolTable) == 0:
+        print("sat")
+        sys.exit(0)
     if not args.multi:
         # round1
         t_round1_start = time.time()

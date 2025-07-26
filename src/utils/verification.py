@@ -1,33 +1,35 @@
 import collections
 import z3
-from sort import Sort
-
-def _is_true(a):
-    return a.decl().kind()==z3.Z3_OP_TRUE
+# from sort import Sort
+from src.utils.sort import Sort
+import src.utils.z3_util as z3_util
 
 def replace_all(text, dic):
-    for i, j in dic.iteritems():
+    for i, j in dic.items():
         text = text.replace(i, j)
     return text
 
 def rename_var(var):
-    reps = {':':'_', '@':'_', '|':'_',"#":'_',"!":"_"}
-    return replace_all(var,reps)
+    reps = {':':'_', '@':'_', '|':'_', "#":'_', "!":"_"}
+    return replace_all(var, reps)
+
+def var_name(expr_z3):
+    return "_t_" + str(expr_z3.get_id())
 
 def _getSort(expr_z3):
     assert isinstance(expr_z3, z3.ExprRef)
-    if expr_z3.sort()==z3.Float32():
+    if expr_z3.sort() == z3.Float32():
         return Sort.Float32
-    if expr_z3.sort()==z3.Float64():
+    if expr_z3.sort() == z3.Float64():
         return Sort.Float64
-    if expr_z3.sort()==z3.RealSort():
+    if expr_z3.sort() == z3.RealSort():
         return Sort.Real
-    if expr_z3.sort()==z3.IntSort():
+    if expr_z3.sort() == z3.IntSort():
         return Sort.Int
     return Sort.UNKNOWN
 
 def var_hash(expr_z3):
-    return "_x_"+expr_z3.hash()
+    return "_x_" + expr_z3.hash()
 
 def verify_solution(ez, X_star, symbolTable, printModel=False):
     assert isinstance(symbolTable, collections.OrderedDict)
@@ -50,4 +52,4 @@ def verify_solution(ez, X_star, symbolTable, printModel=False):
     if printModel:
         print("model: " + str(model))
 
-    return _is_true(z3.simplify(z3.substitute(ez, *model)))
+    return z3_util.is_true(z3.simplify(z3.substitute(ez, *model)))
