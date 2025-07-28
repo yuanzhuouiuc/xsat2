@@ -112,8 +112,11 @@ def main():
     # use z3 frontend
     with open("XSAT_IN.txt") as f:
         try:
-            expr_z3 = z3.simplify(z3.parse_smt2_file(f.read().rstrip())[0])
-        except z3.Z3Exception:
+            expr_z3_lis = z3.parse_smt2_file(f.read().rstrip())
+            expr_z3 = z3.And(expr_z3_lis)
+            expr_z3 = z3.simplify(expr_z3)
+        except z3.Z3Exception as e:
+            print(e)
             sys.stderr.write("[Xsat] The Z3 front-end fails when verifying the model.\n")
     with open("build/foo.symbolTable", "rb") as f:
         symbolTable = pickle.load(f)

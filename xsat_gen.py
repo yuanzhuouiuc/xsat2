@@ -29,7 +29,6 @@ def _print_xsatInfo():
     print ("Contributors: Zhoulai Fu and Zhendong Su")
     print("*"*50)
 
-
 def _get_template():
     template = """#include <Python.h>
 #include "xsat.h"
@@ -111,21 +110,25 @@ def _gen(expr_z3, symbolTable, cache, result):
             if isinstance(expr_z3, z3.FPNumRef):
                 if DEBUG:
                     print("------- Sub-Sub-Branch _is_FPNumRef")
-                try:
-                    str_ret = str(sympy.Float(str(expr_z3), 17))
-                except ValueError:
-                    if expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_PLUS_INF:
-                        str_ret = "INFINITY"
-                    elif expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_MINUS_INF:
-                        str_ret = "- INFINITY"
-                    elif expr_z3.isNaN():
-                        str_ret = "NAN"
-                    else:
+                # Check for special values first
+                if expr_z3.isNaN():
+                    str_ret = "NAN"
+                elif expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_PLUS_INF:
+                    str_ret = "INFINITY"
+                elif expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_MINUS_INF:
+                    str_ret = "- INFINITY"
+                else:
+                    # Handle normal values
+                    try:
+                        str_ret = str(sympy.Float(str(expr_z3), 17))
+                    except ValueError:
+                        # Handle other edge cases
                         offset = 127 if expr_z3.sort() == z3.Float32() else 1023
                         # Z3 new version needs the offset to be taken into consideration
                         expr_z3_exponent = expr_z3.exponent_as_long() - offset
                         str_ret = str(sympy.Float(
-                            (-1) ** float(expr_z3.sign()) * float(str(expr_z3.significand())) * 2 ** (expr_z3_exponent), 17))
+                            (-1) ** float(expr_z3.sign()) * float(str(expr_z3.significand())) * 2 ** (expr_z3_exponent),
+                            17))
             else:
                 if DEBUG:
                     print("------- Sub-Sub-Branch other than FPNumRef, probably FPRef")
@@ -266,13 +269,11 @@ def _gen(expr_z3, symbolTable, cache, result):
         return verification.var_name(expr_z3)
 
     if z3.is_and(expr_z3):
-        if DEBUG: print
-        "-- Branch _is_and"
+        if DEBUG: print("-- Branch _is_and")
         ##TODO Not sure if symbolTable will be treated in a multi-threaded way
         toAppendExpr = _gen(expr_z3.arg(0), symbolTable, cache, result)
         for i in range(1, expr_z3.num_args()):
             toAppendExpr = 'BAND( %s,%s )' % (toAppendExpr, _gen(expr_z3.arg(i), symbolTable, cache, result))
-
         toAppend = "double %s = %s; " \
                    % (verification.var_name(expr_z3), \
                       toAppendExpr, \
@@ -394,10 +395,10 @@ if __name__ == "__main__":
         warnings.filterwarnings("ignore")
     try:
         expr_z3_lis = z3.parse_smt2_string(args.smt2_file.read())
-        # expr_z3 = z3.simplify(expr_z3_lis)
         expr_z3 = z3.And(expr_z3_lis)
-        expr_z3 = z3.simplify(expr_z3)
-    except z3.Z3Exception:
+        expr_z3 = z3.simplify(expr_z3, arith_lhs=False, hoist_cmul=False)
+    except z3.Z3Exception as e:
+        print(e)
         sys.stderr.write("[Xsat] The Z3 fornt-end crashes.\n")
     symbolTable, foo_dot_c = gen(expr_z3)
     args.smt2_file.close()
