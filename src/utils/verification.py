@@ -1,6 +1,5 @@
 import collections
 import z3
-# from sort import Sort
 from src.utils.sort import Sort
 import src.utils.z3_util as z3_util
 
@@ -31,24 +30,37 @@ def _getSort(expr_z3):
 def var_hash(expr_z3):
     return "_x_" + expr_z3.hash()
 
-def verify_solution(ez, X_star, symbolTable, printModel=False):
+def _collect_vars(all_vars, expr):
+    if z3.is_const(expr) and expr.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+        all_vars.add(expr)
+    for child in expr.children():
+        _collect_vars(all_vars, child)
+
+def verify_solution(ez, X_star, symbolTable, printModel = False):
     assert isinstance(symbolTable, collections.OrderedDict)
     assert isinstance(ez, z3.ExprRef)
     assert len(symbolTable) == X_star.size
     model = []
-    # (sympy.Symbol('x'),
+    all_vars = set()
+    _collect_vars(all_vars, ez)
+    var_dict = {}
+    for var in all_vars:
+        var_name = rename_var(var.decl().name())
+        var_dict[var_name] = var
     for (s, val) in zip(symbolTable.items(), X_star):
         var, sort = s[0], s[1]
         var = rename_var(var)
-        if sort == Sort.Float32:
-            var_z3 = z3.FP(str(var), z3.Float32())
-            val_z3 = z3.FPVal(val, z3.Float32())
-        elif sort == Sort.Float64:
-            var_z3 = z3.FP(str(var), z3.Float64())
-            val_z3 = z3.FPVal(val, z3.Float64())
+        if var in var_dict:
+            original_var = var_dict[var]
+            if sort == Sort.Float32:
+                val_z3 = z3.FPVal(val, z3.Float32())
+            elif sort == Sort.Float64:
+                val_z3 = z3.FPVal(val, z3.Float64())
+            else:
+                raise NotImplementedError("Unexpected type %s" % sort)
+            model.append((original_var, val_z3))
         else:
-            raise NotImplementedError("Unexpected type %s" % sort)
-        model.append((var_z3, val_z3))
+            print(f"Warning: Variable {var} not found in expression")
     if printModel:
         print("model: " + str(model))
 
