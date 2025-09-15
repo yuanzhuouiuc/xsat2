@@ -10,7 +10,6 @@ from typing import Tuple
 
 foundit = mp.Event()
 def _callback_global(x, f, accepted):
-    #    print("at minimum %.4f  %s" % (f, 'accepted' if (accepted) else 'not accepted'))
     if f == 0 or foundit.is_set():
         foundit.set()
         return True
@@ -30,14 +29,9 @@ def noop_min(fun, x0, args, **options):
 
 def scale(X, i):
     return X ** (2 * i + 1)
-    # if i ==0:
-    #    return X
-    # else:
-    #    return X**(4*i+3)
 
 def R_quick(X,i,f):
     return f(* scale(X,i))
-#    return foo.R(* (X**(2*i+1)))
 
 def mcmc_bis(i):
     print("*******value of i = ", i)
@@ -59,12 +53,121 @@ def nth_fp_vectorized(n, x):
     if m >= 0x7ff0000000000000:
         warnings.warn("Value out of range, with n= %g,x=%g,m=%g, process=%g" % (n, x, m, mp.current_process.name))
         m = 0x7ff0000000000000
-    #        raise ValueError('out of range')
     bit_pattern = struct.pack('Q', m | sign_bit)
     return struct.unpack('d', bit_pattern)[0]
 
-# def nth_fp_vectorized2(N,X):
-#     return np.vectorize(nth_fp)(N,X)
+@np.vectorize
+def nth_fp32_vectorized(n, x):
+    if x < 0: return -nth_fp32_vectorized(-n, -x)
+    n = int(n)
+    x_f32 = np.float32(x)
+    s = struct.pack('<f', x_f32)
+    i = struct.unpack('<I', s)[0]
+    m = i + n
+    if m < 0:
+        sign_bit = 0x80000000
+        m = -m
+    else:
+        sign_bit = 0
+    if m >= 0x7f800000:  # Float32 infinity
+        warnings.warn(f"Float32 value out of range, n={n}, x={x}")
+        m = 0x7f800000
+    bit_pattern = struct.pack('I', m | sign_bit)
+    return struct.unpack('f', bit_pattern)[0]
+
+def _init():
+    sys.path.insert(0, os.path.join(os.getcwd(), "build/R_ulp"))
+    import foo
+    importlib.reload(foo)
+    with open("build/f32_mask.npy", "rb") as f:
+        f32_mask = np.load(f)
+    _original_R = foo.R
+    f32_indices = np.where(f32_mask)[0]
+    f64_indices = np.where(~f32_mask)[0]
+    # if np.any(f32_mask):
+    #     buffer = np.zeros(foo.dim, dtype=np.float64)
+    #     def R_typed(*args):
+    #         """Wrapped version that handles type conversion internally"""
+    #         # Handle different input formats
+    #         if len(args) == 1 and hasattr(args[0], '__len__'):
+    #             X = args[0]
+    #         else:
+    #             X = np.array(args)
+    #         if len(f32_indices) > 0:
+    #             buffer[f32_indices] = X[f32_indices].astype(np.float32)
+    #         if len(f64_indices) > 0:
+    #             buffer[f64_indices] = X[f64_indices]
+    #         return _original_R(*buffer)
+    #     foo.R = R_typed
+    return foo, f32_indices, f64_indices
+
+def mcmc(args, i):
+    foo, f32_indices, f64_indices = _init()
+    nth_fp_dispatchers = [
+        nth_fp32_vectorized if j in f32_indices else nth_fp_vectorized
+        for j in range(foo.dim)
+    ]
+    np.random.seed()
+    _minimizer_kwargs = dict(method=noop_min) if args.method == 'noop_min' else dict(method=args.method)
+    best_X_star = np.zeros(foo.dim)
+    best_R_star = float('inf')
+    for round_num in range(args.nStartOver):
+        if args.showResult:
+            print(f"--- Process-{i}, Start-Over Attempt {round_num + 1}/{args.nStartOver} ---")
+        sp = np.zeros(foo.dim) + args.startPoint + i + np.random.uniform(-0.5, 0.5, foo.dim)
+        res_global = op.basinhopping(
+            lambda X: foo.R(*scale(X, i)),
+            sp,
+            niter=args.niter,
+            stepsize=args.stepSize,
+            minimizer_kwargs=_minimizer_kwargs,
+            callback=_callback_global
+        )
+        if args.showResult:
+            print(f"Result (Global Search, i={i}, attempt={round_num + 1}):")
+            print(res_global)
+        current_X_star = scale(tr_help(res_global.x), i)
+        current_R_star = res_global.fun
+        if 0 < current_R_star < args.round2_threshold:
+            if args.showTime:
+                print(f"[Xsat Process-{i}] Starting local refinement...")
+            sp_refine = tr_help(res_global.x)
+            X_scaled_cached = scale(sp_refine, i)
+            # This objective function now iterates through the N values and applies
+            # the appropriate scalar nth_fp function for each element based on the dispatch table.
+            def obj_near(N):
+                X_moved = np.array([
+                    nth_fp_dispatchers[j](n_val, x_base_val)
+                    for j, (n_val, x_base_val) in enumerate(zip(N, X_scaled_cached))
+                ])
+                return foo.R(*X_moved)
+            res_refine = op.basinhopping(
+                obj_near,
+                np.zeros(foo.dim),
+                niter=args.round2_niter,
+                stepsize=args.round2_stepsize,
+                minimizer_kwargs=_minimizer_kwargs,
+                callback=_callback_global
+            )
+            if args.showResult:
+                print(f"Result (Local Refinement, i={i}, attempt={round_num + 1}):")
+                print(res_refine)
+            if res_refine.fun < current_R_star:
+                current_R_star = res_refine.fun
+                current_X_star = np.array([
+                    nth_fp_dispatchers[j](n_val, x_base_val)
+                    for j, (n_val, x_base_val) in enumerate(zip(res_refine.x, X_scaled_cached))
+                ])
+        if current_R_star < best_R_star:
+            best_R_star = current_R_star
+            best_X_star = current_X_star
+            if args.showResult:
+                print(f"--- Process-{i} New Best Found: R_star = {best_R_star:.4g} ---")
+        if best_R_star == 0:
+            if args.showResult:
+                print(f"Solution found by Process-{i} in attempt {round_num + 1}.")
+            break
+    return best_X_star, best_R_star
 
 # round1 use R_square/foo.so to quickly converge to a minimum point. This round1 refers to single-processor case.
 def mcmc_round1(args):
@@ -130,81 +233,3 @@ def mcmc_round3(args, X_star: np.ndarray) -> Tuple[np.ndarray, float]:
     R_star = res.fun
     X_star = tr_help(nth_fp_vectorized(res.x, X_star))
     return X_star, R_star
-
-def mcmc(args, i):
-    # sys.path.insert(0,os.path.join(os.getcwd(),"build/R_square"))
-    sys.path.insert(0, os.path.join(os.getcwd(), "build/R_ulp"))
-    import foo
-    importlib.reload(foo)  # necessary because name 'foo' now still points to foo_square
-    np.random.seed()
-    if args.method == 'noop_min':
-        _minimizer_kwargs = dict(method=noop_min)
-    else:
-        _minimizer_kwargs = dict(method=args.method)
-    sp = np.zeros(foo.dim) + args.startPoint + i
-    res = op.basinhopping(lambda X: R_quick(X, i, foo.R), sp, niter=args.niter, stepsize=args.stepSize,
-                          minimizer_kwargs=_minimizer_kwargs, callback=_callback_global)
-    if args.showResult:
-        print("result (round 1) with i = ", i, ":")
-        print(res)
-        print()
-    # do some change here. If the first round gives a good/bad enough result, no need for the second.
-
-    X_star = scale(res.x, i)
-    R_star = res.fun
-    if res.fun != 0 and res.fun < args.round2_threshold:
-        # if args.round2:
-        if args.showTime:
-            print("[Xsat] round2_move")
-        sys.path.insert(0, os.path.join(os.getcwd(), "build/R_ulp"))
-        import foo
-        importlib.reload(foo)
-        sp = np.array([res.x + 0]) if res.x.ndim == 0 else res.x
-        obj_near = lambda N: foo.R(*nth_fp_vectorized(N, scale(sp, i)))
-        # print op.fmin_powell(obj_near,np.zeros(foo.dim))
-        res_round2 = op.basinhopping(obj_near, np.zeros(foo.dim), niter=args.round2_niter,
-                                     stepsize=args.round2_stepsize, minimizer_kwargs=_minimizer_kwargs,
-                                     callback=_callback_global)
-        #        res_round2 = op.fmin_powell(obj_near,np.zeros(foo.dim))
-        if args.showResult:
-            print("result (round 2) with i = ", i)
-            print(res_round2)
-            print()
-        R_star = res_round2.fun
-        # change this because I could have used the R_quick.
-        X_star = nth_fp_vectorized(res_round2.x, scale(sp, i))
-    return X_star, R_star
-
-def run_mcmc_single(args):
-    sys.path.insert(0, os.path.join(os.getcwd(), "build/R_square"))
-    import foo as foo_square
-    sp = np.zeros(foo_square.dim) + args.startPoint
-    obj = lambda X: foo_square.R(*X)
-    res = op.basinhopping(obj, sp, niter=args.niter, stepsize=args.stepSize, minimizer_kwargs={'method': args.method},
-                          callback=_callback_global)
-    if args.showResult:
-        print("result round 1 with single processor ")
-        print(res)
-        print()
-    if args.round2:
-        if args.showTime:
-            print("[Xsat] round2 with single processor")
-        sys.path.insert(0, os.path.join(os.getcwd(), "build/R_ulp"))
-        import foo as foo_ulp
-        importlib.reload(foo_ulp)  # necessary because name 'foo' now still points to foo_square
-        X_star = [res.x + 0] if res.x.ndim == 0 else res.x
-        obj_near = lambda N: foo_ulp.R(*nth_fp_vectorized(N, X_star))
-        # print op.fmin_powell(obj_near,np.zeros(foo.dim))
-        print("*" * 50)
-        print(obj_near(0))
-        print("*" * 50)
-        res_round2 = op.basinhopping(obj_near, np.zeros(foo_ulp.dim), niter=args.round2_niter, stepsize=100.0,
-                                     minimizer_kwargs={'method': args.method}, callback=_callback_global)
-        if args.showResult:
-            print("result (round 2):")
-            print(res_round2)
-            print()
-            res.fun = res_round2.fun
-            res.x = nth_fp_vectorized(res_round2.x, X_star)
-    return res
-

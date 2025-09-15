@@ -13,9 +13,11 @@ import struct
 import pickle
 import importlib
 import threading
+import pickle
 
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
+from src.utils.sort import Sort
 from src.core.config import SolverConfig
 import src.optimization.mcmc as op_mcmc
 import src.utils.verification as verification
@@ -28,6 +30,15 @@ def str2bool(v: str) -> bool:
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def create_typed_input(X, symbolTable):
+    """Convert numpy array to correct types based on symbolTable"""
+    typed_X = []
+    for idx, (var, var_type) in enumerate(symbolTable.items()):
+        if var_type == Sort.Float32:
+            typed_X.append(np.float32(X[idx]))
+        else:  # Float64 or other types
+            typed_X.append(np.float64(X[idx]))
+    return typed_X
 
 def get_parser():
     parser = argparse.ArgumentParser(prog='Xsat')
@@ -123,6 +134,15 @@ def main():
     if len(symbolTable) == 0:
         print("sat")
         sys.exit(0)
+    try:
+        names = list(symbolTable.keys())
+        types = list(symbolTable.values())
+        f32_mask = np.array([t == Sort.Float32 for t in types], dtype=bool)
+        os.makedirs("build", exist_ok=True)
+        with open("build/f32_mask.npy", "wb") as _f:
+            np.save(_f, f32_mask)
+    except Exception as _e:
+        print("[Xsat] Warning: failed to persist f32 mask:", _e)
     if not args.multi:
         # round1
         t_round1_start = time.time()
@@ -196,10 +216,16 @@ def main():
             print(f"X_star (final) {X_star}")
             print(f"R_star (final) {R_star}")
     t_mcmc = time.time()
+    has_float32 = any(t == Sort.Float32 for t in symbolTable.values())
+    has_float64 = any(t == Sort.Float64 for t in symbolTable.values())
     if args.verify:
         if args.showTime:
             print("[Xsat] verify X_star with z3 front-end")
-        verified = verification.verify_solution(expr_z3, X_star, symbolTable, printModel=args.printModel)
+        if has_float32 or has_float64:
+            X_star_typed = create_typed_input(X_star, symbolTable)
+            verified = verification.verify_solution(expr_z3, np.array(X_star_typed), symbolTable, printModel=args.printModel)
+        else:
+            verified = verification.verify_solution(expr_z3, X_star, symbolTable, printModel=args.printModel)
         if verified and R_star != 0:
             sys.stderr.write("WARNING!!!!!!!!!!!!!!!! Actually sat.\n")
         elif not verified and R_star == 0:

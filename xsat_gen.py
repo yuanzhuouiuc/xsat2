@@ -30,16 +30,17 @@ def _print_xsatInfo():
     print("*"*50)
 
 def _get_template():
+    """Template that handles both float32 and float64 variables natively"""
     template = """#include <Python.h>
 #include "xsat.h"
 
 static PyObject* R(PyObject* self, PyObject *args){
-
-  double %(x_vars)s;
-  if (!PyArg_ParseTuple(args,"%(x_types)s", %(x_refs)s))
+  // Mixed type declarations
+  %(var_declarations)s
+  if (!PyArg_ParseTuple(args,"%(parse_formats)s", %(var_refs)s))
     return NULL;
   %(x_body)s
-  return Py_BuildValue("d",%(x_expr)s);
+  return Py_BuildValue("d",%(x_expr)s);  // Always return double for distance
 }
 
 static PyMethodDef methods[] = {
@@ -49,14 +50,11 @@ static PyMethodDef methods[] = {
 
 static struct PyModuleDef moduledef = {
   PyModuleDef_HEAD_INIT,
-  "foo",           /* m_name */
-  NULL,            /* m_doc */
-  -1,              /* m_size */
-  methods,         /* m_methods */
-  NULL,            /* m_reload */
-  NULL,            /* m_traverse */
-  NULL,            /* m_clear */
-  NULL,            /* m_free */
+  "foo",
+  NULL,
+  -1,
+  methods,
+  NULL, NULL, NULL, NULL
 };
 
 PyMODINIT_FUNC
@@ -65,12 +63,41 @@ PyInit_foo(void)
   PyObject* module = PyModule_Create(&moduledef);
   if (module == NULL)
     return NULL;
-
   PyModule_AddIntConstant(module, "dim", %(x_dim)s);
   return module;
 }
 """
     return template
+
+def _get_operand_type(expr, symbolTable, cache):
+    """Determine if an operand is float32 or float64"""
+    if z3_util.is_variable(expr):
+        var_name = verification.rename_var(expr.decl().name())
+        if var_name in symbolTable:
+            return symbolTable[var_name]
+    elif z3_util.is_value(expr):
+        if expr.sort() == z3.Float32():
+            return Sort.Float32
+        elif expr.sort() == z3.Float64():
+            return Sort.Float64
+    elif expr.get_id() in cache:
+        # Check the type of intermediate result
+        if expr.sort() == z3.Float32():
+            return Sort.Float32
+        elif expr.sort() == z3.Float64():
+            return Sort.Float64
+    return Sort.Float64  # Default to float64
+
+def _get_comparison_function(base_func, lhs_type, rhs_type):
+    """Get the appropriate comparison function based on operand types"""
+    if lhs_type == Sort.Float32 and rhs_type == Sort.Float32:
+        return f"{base_func}_f32"
+    elif lhs_type == Sort.Float32 and rhs_type == Sort.Float64:
+        return f"{base_func}_mixed_fd"
+    elif lhs_type == Sort.Float64 and rhs_type == Sort.Float32:
+        return f"{base_func}_mixed_df"
+    else:
+        return base_func  # Both float64 or default
 
 def _gen(expr_z3, symbolTable, cache, result):
     ###Leaf: var
@@ -97,8 +124,6 @@ def _gen(expr_z3, symbolTable, cache, result):
             assert symType == symbolTable[symVar]
         else:
             symbolTable[symVar] = symType
-        if expr_z3.sort() == z3.Float32():
-            symVar = "TR32(%s)" % symVar  # do the same ting for verify !!!!!!!!
         return symVar
     ###Leaf: val
     if z3_util.is_value(expr_z3):
@@ -167,11 +192,11 @@ def _gen(expr_z3, symbolTable, cache, result):
             print("-- Branch _is_le")
         lhs = _gen(expr_z3.arg(0), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
-        toAppend = "double %s = DLE(%s,%s); " \
-                   % (verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        lhs_type = _get_operand_type(expr_z3.arg(0), symbolTable, cache)
+        rhs_type = _get_operand_type(expr_z3.arg(1), symbolTable, cache)
+        func_name = _get_comparison_function("DLE", lhs_type, rhs_type)
+        toAppend = "double %s = %s(%s,%s);" % (
+            verification.var_name(expr_z3), func_name, lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -184,13 +209,9 @@ def _gen(expr_z3, symbolTable, cache, result):
             warnings.warn("WARNING!!! I expect the first argument of fpFP is RNE, but it is ", expr_z3.arg(0))
         x = _gen(expr_z3.arg(1), symbolTable, cache, result)
         if expr_z3.sort() == z3.FPSort(8, 24):
-            x = "TR32(%s)" % x
-        # else if expr_z3.sort()==z3.FPSort(8,24):
-        #    x = "TR(%s)"  %x
-        toAppend = "%s %s = %s; " \
-                   % (expr_type, verification.var_name(expr_z3), \
-                      x, \
-                      )
+            toAppend = "float %s = (float)(%s);" % (verification.var_name(expr_z3), x)
+        else:
+            toAppend = "double %s = (double)(%s);" % (verification.var_name(expr_z3), x)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -199,11 +220,11 @@ def _gen(expr_z3, symbolTable, cache, result):
             print("-- Branch _is_lt")
         lhs = _gen(expr_z3.arg(0), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
-        toAppend = "double %s = DLT(%s,%s);" \
-                   % (verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        lhs_type = _get_operand_type(expr_z3.arg(0), symbolTable, cache)
+        rhs_type = _get_operand_type(expr_z3.arg(1), symbolTable, cache)
+        func_name = _get_comparison_function("DLT", lhs_type, rhs_type)
+        toAppend = "double %s = %s(%s,%s);" % (
+            verification.var_name(expr_z3), func_name, lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -212,11 +233,11 @@ def _gen(expr_z3, symbolTable, cache, result):
             print("-- Branch _is_eq")
         lhs = _gen(expr_z3.arg(0), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
-        toAppend = "double %s = DEQ(%s,%s);" \
-                   % (verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        lhs_type = _get_operand_type(expr_z3.arg(0), symbolTable, cache)
+        rhs_type = _get_operand_type(expr_z3.arg(1), symbolTable, cache)
+        func_name = _get_comparison_function("DEQ", lhs_type, rhs_type)
+        toAppend = "double %s = %s(%s,%s);" % (
+            verification.var_name(expr_z3), func_name, lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -228,11 +249,10 @@ def _gen(expr_z3, symbolTable, cache, result):
         assert expr_z3.num_args() == 3
         lhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(2), symbolTable, cache, result)
-        toAppend = "%s %s = %s*%s; " \
-                   % (expr_type, verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        if expr_type == 'float':
+            toAppend = "float %s = (float)(%s) * (float)(%s);" % (verification.var_name(expr_z3), lhs, rhs)
+        else:
+            toAppend = "double %s = %s * %s;" % (verification.var_name(expr_z3), lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -244,11 +264,10 @@ def _gen(expr_z3, symbolTable, cache, result):
         assert expr_z3.num_args() == 3
         lhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(2), symbolTable, cache, result)
-        toAppend = "%s %s = %s/%s; " \
-                   % (expr_type, verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        if expr_type == 'float':
+            toAppend = "float %s = (float)(%s) / (float)(%s);" % (verification.var_name(expr_z3), lhs, rhs)
+        else:
+            toAppend = "double %s = %s / %s;" % (verification.var_name(expr_z3), lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -260,11 +279,10 @@ def _gen(expr_z3, symbolTable, cache, result):
         assert expr_z3.num_args() == 3
         lhs = _gen(expr_z3.arg(1), symbolTable, cache, result)
         rhs = _gen(expr_z3.arg(2), symbolTable, cache, result)
-        toAppend = "%s %s = %s+%s;" \
-                   % (expr_type, verification.var_name(expr_z3), \
-                      lhs, \
-                      rhs, \
-                      )
+        if expr_type == 'float':
+            toAppend = "float %s = (float)(%s) + (float)(%s);" % (verification.var_name(expr_z3), lhs, rhs)
+        else:
+            toAppend = "double %s = %s + %s;" % (verification.var_name(expr_z3), lhs, rhs)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -289,25 +307,24 @@ def _gen(expr_z3, symbolTable, cache, result):
             warnings.warn("WARNING!!! arg(0) is not RNE but is treated as RNE. arg(0) = ", expr_z3.arg(0))
         op1 = _gen(expr_z3.arg(0).arg(0), symbolTable, cache, result)
         op2 = _gen(expr_z3.arg(0).arg(1), symbolTable, cache, result)
+        lhs_type = _get_operand_type(expr_z3.arg(0).arg(0), symbolTable, cache)
+        rhs_type = _get_operand_type(expr_z3.arg(0).arg(1), symbolTable, cache)
         if z3_util.is_ge(expr_z3.arg(0)):
-            a = "DLT(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DLT", lhs_type, rhs_type)
         elif z3_util.is_gt(expr_z3.arg(0)):
-            a = "DLE(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DLE", lhs_type, rhs_type)
         elif z3_util.is_le(expr_z3.arg(0)):
-            a = "DGT(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DGT", lhs_type, rhs_type)
         elif z3_util.is_lt(expr_z3.arg(0)):
-            a = "DGE(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DGE", lhs_type, rhs_type)
         elif z3_util.is_eq(expr_z3.arg(0)):
-            a = "DNE(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DNE", lhs_type, rhs_type)
         elif z3_util.is_distinct(expr_z3.arg(0)):
-            a = "DEQ(%s,%s)" % (op1, op2)
+            func = _get_comparison_function("DEQ", lhs_type, rhs_type)
         else:
-            raise NotImplementedError(
-                "Not implemented case 004 for expr_z3  =  %s. 'Not(or... )' is not handled yet" % expr_z3)
-        toAppend = "%s %s = %s; " \
-                   % (expr_type, verification.var_name(expr_z3), \
-                      a, \
-                      )
+            raise NotImplementedError("Not implemented case")
+        a = "%s(%s,%s)" % (func, op1, op2)
+        toAppend = "double %s = %s;" % (verification.var_name(expr_z3), a)
         result.append(toAppend)
         return verification.var_name(expr_z3)
 
@@ -326,7 +343,6 @@ def _gen(expr_z3, symbolTable, cache, result):
     raise NotImplementedError(
         "Not implemented case 002 for expr_z3  =  %s, kind(%s)" % (expr_z3, expr_z3.decl().kind()))
 
-
 def gen(expr_z3):
     symbolTable = collections.OrderedDict()
     cache = set()
@@ -334,14 +350,32 @@ def gen(expr_z3):
     _gen(expr_z3, symbolTable, cache, result)   #########STOHERE
     if len(symbolTable)==0:
         return symbolTable,'int main(){return 0;}'
+    # Build variable declarations with correct types
+    var_declarations = []
+    parse_formats = []
+    var_refs = []
+    for var_name, var_type in symbolTable.items():
+        if var_type == Sort.Float32:
+            var_declarations.append(f"float {var_name};")
+            parse_formats.append("f")  # 'f' for float in PyArg_ParseTuple
+            var_refs.append(f"&{var_name}")
+        elif var_type == Sort.Float64:
+            var_declarations.append(f"double {var_name};")
+            parse_formats.append("d")  # 'd' for double
+            var_refs.append(f"&{var_name}")
+        else:
+            raise NotImplementedError("Unknown types in smt")
     x_expr = verification.var_name(expr_z3)   #the last var
     x_body = '\n  '.join(result)
-    x_vars = ','.join(symbolTable.keys())
-    x_types = 'd'*(len(symbolTable))
-    x_refs = ','.join(map(lambda x: "&"+x, symbolTable.keys()))
     x_dim = len(symbolTable)
-    return symbolTable,  _get_template() %{"x_vars":x_vars,"x_types":x_types,"x_refs":x_refs,"x_expr":x_expr,"x_dim":x_dim, "x_body":x_body}
-
+    return symbolTable, _get_template() % {
+        "var_declarations": "\n  ".join(var_declarations),
+        "parse_formats": "".join(parse_formats),
+        "var_refs": ", ".join(var_refs),
+        "x_expr": x_expr,
+        "x_dim": x_dim,
+        "x_body": x_body
+    }
 
 def get_parser():
     parser = argparse.ArgumentParser(prog='XSat')
