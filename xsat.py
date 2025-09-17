@@ -22,6 +22,8 @@ from src.core.config import SolverConfig
 import src.optimization.mcmc as op_mcmc
 import src.utils.verification as verification
 
+np.set_printoptions(precision=20, suppress=True)
+
 def str2bool(v: str) -> bool:
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
         return True

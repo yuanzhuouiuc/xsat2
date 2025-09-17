@@ -28,7 +28,7 @@ def noop_min(fun, x0, args, **options):
     return op.OptimizeResult(x=x0, fun=fun(x0), success=True, nfev=1)
 
 def scale(X, i):
-    return X ** (2 * i + 1)
+    return X ** (i + 1)
 
 def R_quick(X,i,f):
     return f(* scale(X,i))
@@ -84,21 +84,6 @@ def _init():
     _original_R = foo.R
     f32_indices = np.where(f32_mask)[0]
     f64_indices = np.where(~f32_mask)[0]
-    # if np.any(f32_mask):
-    #     buffer = np.zeros(foo.dim, dtype=np.float64)
-    #     def R_typed(*args):
-    #         """Wrapped version that handles type conversion internally"""
-    #         # Handle different input formats
-    #         if len(args) == 1 and hasattr(args[0], '__len__'):
-    #             X = args[0]
-    #         else:
-    #             X = np.array(args)
-    #         if len(f32_indices) > 0:
-    #             buffer[f32_indices] = X[f32_indices].astype(np.float32)
-    #         if len(f64_indices) > 0:
-    #             buffer[f64_indices] = X[f64_indices]
-    #         return _original_R(*buffer)
-    #     foo.R = R_typed
     return foo, f32_indices, f64_indices
 
 def mcmc(args, i):

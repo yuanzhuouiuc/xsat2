@@ -169,7 +169,14 @@ def _gen(expr_z3, symbolTable, cache, result):
         else:
             raise NotImplementedError("[XSat: Coral Benchmarking] type not considered ")
         if expr_z3.sort() == z3.Float32():
-            str_ret = str_ret + "f"
+            if expr_z3.isNaN():
+                str_ret = "NAN"
+            elif expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_PLUS_INF:
+                str_ret = "INFINITY"
+            elif expr_z3.isInf() and expr_z3.decl().kind() == z3.Z3_OP_FPA_MINUS_INF:
+                str_ret = "- INFINITY"
+            else:
+                str_ret = str_ret + "f"
         return str_ret
 
     # if (expr_z3 in cache): return cache[expr_z3]
@@ -391,8 +398,8 @@ def get_parser():
                         default=False)
     parser.add_argument('--showResult', help='show the basinhopping output (default:false)', action='store_true',
                         default=False)
-    parser.add_argument('--stepSize', help='parameter of basinhopping', type=float, default=10.0);
-    parser.add_argument('--stepSize_round2', help='parameter of basinhopping', type=float, default=100.0);
+    parser.add_argument('--stepSize', help='parameter of basinhopping', type=float, default=10.0)
+    parser.add_argument('--stepSize_round2', help='parameter of basinhopping', type=float, default=100.0)
     parser.add_argument('--verify', help='verify the model', action='store_true', default=False)
     parser.add_argument('--verify2', help='verify the model (method 2)', action='store_true', default=False)
     parser.add_argument('--showModel', help='show the model as a var->value mapping', action='store_true',
