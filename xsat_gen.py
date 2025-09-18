@@ -33,12 +33,15 @@ def _get_template():
     """Template that handles both float32 and float64 variables natively"""
     template = """#include <Python.h>
 #include "xsat.h"
+#include <math.h>
 
 static PyObject* R(PyObject* self, PyObject *args){
   // Mixed type declarations
   %(var_declarations)s
   if (!PyArg_ParseTuple(args,"%(parse_formats)s", %(var_refs)s))
     return NULL;
+  //%(print_statements)s
+  %(finite_check)s
   %(x_body)s
   return Py_BuildValue("d",%(x_expr)s);  // Always return double for distance
 }
@@ -375,13 +378,31 @@ def gen(expr_z3):
     x_expr = verification.var_name(expr_z3)   #the last var
     x_body = '\n  '.join(result)
     x_dim = len(symbolTable)
+    # code for print input
+    print_statement_code = ""
+    var_names = symbolTable.keys()
+    format_parts = [f"{name} = %.7lf" for name in var_names]
+    printf_format_string = f'"C Code: {", ".join(format_parts)}\\n"'
+    printf_vars = ", " + ", ".join(var_names)
+    print_statement_code = f"printf({printf_format_string}{printf_vars});"
+    # code for finite check
+    conditions = [f"!isfinite({name})" for name in symbolTable.keys()]
+    # Join the conditions with the C logical OR operator "||"
+    full_condition = " || ".join(conditions)
+    finite_check_code = (
+        f'if ({full_condition}) {{\n'
+        f'    return Py_BuildValue("d", Py_HUGE_VAL);\n'
+        f'  }}'
+    )
     return symbolTable, _get_template() % {
         "var_declarations": "\n  ".join(var_declarations),
         "parse_formats": "".join(parse_formats),
         "var_refs": ", ".join(var_refs),
         "x_expr": x_expr,
         "x_dim": x_dim,
-        "x_body": x_body
+        "x_body": x_body,
+        "print_statements": print_statement_code,
+        "finite_check": finite_check_code
     }
 
 def get_parser():
@@ -410,11 +431,10 @@ def get_parser():
                         default=False)
     parser.add_argument('--showVariableNumber', help='show variable number, using the Z3 frontend', action='store_true',
                         default=False)
-
     parser.add_argument('--command_compilation', help='the command used to compile the generated foo.c to foo.so',
                         default='clang -O3 -fbracket-depth=2048 -fPIC -I /usr/local/Cellar/python/2.7.9/Frameworks/Python.framework/Versions/2.7/include/python2.7/ %(file)s.c -dynamiclib -o %(file)s.so -L /usr/local/Cellar/python/2.7.9/Frameworks/Python.framework/Versions/Current/lib/ -lpython2.7')
     parser.add_argument('--startPoint', help='start point in a single dimension', action='store', type=float,
-                        default=1.0);
+                        default=1.0)
     parser.add_argument("--multi", help="multi-processing (default: false)", default=False, action='store_true')
     parser.add_argument("--multiMessage", help="multi-processing message", default=False, action='store_true')
     parser.add_argument("--round2", help="activate round2 when unsat (default: false)", default=False,
